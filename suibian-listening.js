@@ -214,19 +214,19 @@ async function getRandomBatch(count) {
     }
     var fresh = [];
     for (var i = 0; i < songs.length; i++) {
-      var h = songHash(songs[i]);
-      if (!randomUsed[h]) {
-        randomUsed[h] = true;
-        randomUsedCount++;
-        fresh.push(songs[i]);
-      }
+      if (!randomUsed[songHash(songs[i])]) fresh.push(songs[i]);
     }
     shuffle(fresh);
-    for (var j = 0; j < fresh.length && j < 30 && batch.length < count; j++) batch.push(fresh[j]);
+    for (var j = 0; j < fresh.length && j < 30 && batch.length < count; j++) {
+      batch.push(fresh[j]);
+      randomUsed[songHash(fresh[j])] = true;
+      randomUsedCount++;
+    }
   }
-  if (randomUsedCount > 12000) {
+  if (batch.length === 0 && randomUsedCount > 0) {
     randomUsed = {};
     randomUsedCount = 0;
+    return getRandomBatch(count);
   }
   return batch;
 }
