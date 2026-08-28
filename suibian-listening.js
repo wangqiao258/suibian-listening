@@ -171,8 +171,66 @@ async function neteaseSearch(keyword, page) {
   return { isEnd: list.length < 30, data: list };
 }
 
+function parseBiliVideoTitle(rawTitle) {
+  var t = stripTags(rawTitle || '');
+  var songTitle = '';
+  var songArtist = '';
+  var m1 = t.match(/\u300a([^\u300a\u300b]+)\u300b/);
+  if (m1) {
+    songTitle = m1[1].trim();
+    var before = t.substring(0, m1.index).trim();
+    var am = before.match(/([\u4e00-\u9fa5\w]+\s*)$/);
+    if (am) songArtist = am[1].trim();
+  }
+  if (!songTitle) {
+    var m2 = t.match(/([\u4e00-\u9fa5\w]+)\s*[-\u2014]\s*([\u4e00-\u9fa5\w]+)/);
+    if (m2) {
+      songArtist = m2[1].trim();
+      songTitle = m2[2].trim();
+    }
+  }
+  if (!songTitle) {
+    var cleaned = t.replace(/\[([^\]]*)\]/g, '').replace(/\uff08([^\uff09]*)\uff09/g, '').replace(/\(([^\)]*)\)/g, '').trim();
+    var parts = cleaned.split(/\s*[-\u2014]\s*/);
+    if (parts.length >= 2) {
+      songTitle = parts[0].trim();
+      songArtist = parts[1].trim();
+    } else {
+      songTitle = cleaned;
+    }
+  }
+  if (songTitle.length > 30) songTitle = songTitle.substring(0, 30);
+  if (songArtist.length > 20) songArtist = songArtist.substring(0, 20);
+  return { title: songTitle, artist: songArtist };
+}
+
+async function biliSearchToMusicItems(keyword, page) {
+  try {
+    var results = await biliSearch(keyword, page);
+    var filtered = filterBiliResults(results);
+    var list = [];
+    for (var i = 0; i < filtered.length; i++) {
+      var r = filtered[i];
+      var dur = parseBiliDuration(r.duration);
+      var parsed = parseBiliVideoTitle(r.title);
+      list.push({
+        id: r.bvid || ('bili_' + i),
+        title: parsed.title || stripTags(r.title || ''),
+        artist: parsed.artist || r.author || '未知UP主',
+        album: r.tag || 'Bilibili',
+        pic: r.pic && r.pic.startsWith('//') ? 'https:' + r.pic : r.pic,
+        duration: dur,
+        platform: 'suibian',
+      });
+    }
+    return { isEnd: results.length < 20, data: list };
+  } catch (e) {
+    return { isEnd: true, data: [] };
+  }
+}
+
 async function search(query, page, type) {
-  if (type === 'music') return neteaseSearch(query, page);
+  if (type === 'music') return biliSearchToMusicItems(query, page);
   return { isEnd: true, data: [] };
 }
 
@@ -629,6 +687,33 @@ async function fetchLrclibSearch(title, artist) {
   return null;
 }
 
+async function fetchKugouLyric(title, artist, duration) {
+  var keyword = title + (artist ? ' ' + artist : '');
+  var dur = (duration && duration > 0) ? Math.floor(duration) : 0;
+  var searchUrl = 'https://lyrics2.kugou.com/search?ver=1&man=yes&client=mobi&keyword=' + encodeURIComponent(keyword) + '&duration=' + dur + '&hash=';
+  var res = await request.get(searchUrl, { timeout: 10000 });
+  var data = res && res.data;
+  if (!data || !data.candidates || !data.candidates.length) return null;
+  var c = data.candidates[0];
+  var dlUrl = 'https://lyrics2.kugou.com/download?ver=1&client=pc&id=' + c.id + '&accesskey=' + c.accesskey + '&fmt=lrc&charset=utf8';
+  var res2 = await request.get(dlUrl, { timeout: 10000 });
+  var data2 = res2 && res2.data;
+  if (!data2 || !data2.content) return null;
+  var decoded = '';
+  try {
+    decoded = decodeURIComponent(escape(atob(data2.content)));
+  } catch (e) {
+    try {
+      var buf = Buffer.from(data2.content, 'base64');
+      decoded = buf.toString('utf-8');
+    } catch (e2) {
+      return null;
+    }
+  }
+  decoded = decoded.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  return decoded.trim() || null;
+}
+
 function resolveLrcResult(result, musicItem) {
   if (!result || !result.text) return null;
   if (result.synced || hasLrcTimestamps(result.text)) return result.text;
@@ -693,13 +778,29 @@ async function getLyric(musicItem) {
     } catch (e) {}
   }
 
+  try {
+    var kugou = await fetchKugouLyric(title, artist, musicItem.duration);
+    if (kugou) {
+      setCachedLyric('global', cacheKey, kugou);
+      return { rawLrc: kugou };
+    }
+  } catch (e) {}
+
+  try {
+    var kugou2 = await fetchKugouLyric(cleanTitle || title, artist, musicItem.duration);
+    if (kugou2) {
+      setCachedLyric('global', cacheKey, kugou2);
+      return { rawLrc: kugou2 };
+    }
+  } catch (e) {}
+
   return null;
 }
 
 module.exports = {
   platform: 'suibian',
-  version: '0.2.5',
-  author: 'you',
+  version: '0.3.2',
+  author: 'wangqiao258',
   description: '多平台官方榜单无限随机播放，按歌名+歌手用bilibili搜索直接播放',
   srcUrl: '',
   cacheControl: 'no-cache',
