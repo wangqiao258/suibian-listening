@@ -537,6 +537,36 @@ function setCachedLyric(platform, id, lyric) {
   lyricCache[key] = { lyric: lyric, time: Date.now() };
 }
 
+function generatePseudoLrc(plainText, durationSec) {
+  if (!plainText) return null;
+  var lines = plainText.split('\n');
+  var filtered = [];
+  for (var i = 0; i < lines.length; i++) {
+    var t = lines[i].trim();
+    if (t.length > 0) filtered.push(t);
+  }
+  if (!filtered.length) return null;
+  var dur = (durationSec && durationSec > 0) ? durationSec : 240;
+  var interval = dur / (filtered.length + 1);
+  var lrc = [];
+  for (var j = 0; j < filtered.length; j++) {
+    var sec = Math.floor(interval * (j + 1));
+    var m = Math.floor(sec / 60);
+    var s = sec % 60;
+    var ts = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+    lrc.push('[' + ts + ']' + filtered[j]);
+  }
+  return lrc.join('\n');
+}
+
+function hasLrcTimestamps(text) {
+  return text && /^\[\d{2}:\d{2}[.:]\d{2,3}\]/m.test(text);
+}
+
+function stripVersionTag(s) {
+  return String(s || '').replace(/\s*[\(（][^\)）]*[\)）]\s*/g, '').trim();
+}
+
 async function fetchLrclibLyric(title, artist) {
   var params = { track_name: title };
   if (artist) params.artist_name = artist;
@@ -547,8 +577,8 @@ async function fetchLrclibLyric(title, artist) {
   });
   var data = res && res.data;
   if (!data) return null;
-  if (data.syncedLyrics) return data.syncedLyrics;
-  if (data.plainLyrics) return data.plainLyrics;
+  if (data.syncedLyrics) return { text: data.syncedLyrics, synced: true };
+  if (data.plainLyrics) return { text: data.plainLyrics, synced: false, duration: data.duration };
   return null;
 }
 
@@ -594,9 +624,16 @@ async function fetchLrclibSearch(title, artist) {
   var data = res && res.data;
   if (!data || !data.length) return null;
   var best = pickBestLrclibResult(data, title, artist);
-  if (best && best.syncedLyrics) return best.syncedLyrics;
-  if (best && best.plainLyrics) return best.plainLyrics;
+  if (best && best.syncedLyrics) return { text: best.syncedLyrics, synced: true };
+  if (best && best.plainLyrics) return { text: best.plainLyrics, synced: false, duration: best.duration };
   return null;
+}
+
+function resolveLrcResult(result, musicItem) {
+  if (!result || !result.text) return null;
+  if (result.synced || hasLrcTimestamps(result.text)) return result.text;
+  var dur = (result.duration && result.duration > 0) ? result.duration : (musicItem.duration || 240);
+  return generatePseudoLrc(result.text, dur);
 }
 
 async function getLyric(musicItem) {
@@ -611,34 +648,57 @@ async function getLyric(musicItem) {
 
   try {
     var lrclib = await fetchLrclibLyric(title, artist);
-    if (lrclib) {
-      setCachedLyric('global', cacheKey, lrclib);
-      return { rawLrc: lrclib };
+    var lrc = resolveLrcResult(lrclib, musicItem);
+    if (lrc) {
+      setCachedLyric('global', cacheKey, lrc);
+      return { rawLrc: lrc };
     }
   } catch (e) {}
 
   try {
     var lrclib2 = await fetchLrclibSearch(title, artist);
-    if (lrclib2) {
-      setCachedLyric('global', cacheKey, lrclib2);
-      return { rawLrc: lrclib2 };
+    var lrc2 = resolveLrcResult(lrclib2, musicItem);
+    if (lrc2) {
+      setCachedLyric('global', cacheKey, lrc2);
+      return { rawLrc: lrc2 };
     }
   } catch (e) {}
 
   try {
     var lrclib3 = await fetchLrclibSearch(title, '');
-    if (lrclib3) {
-      setCachedLyric('global', cacheKey, lrclib3);
-      return { rawLrc: lrclib3 };
+    var lrc3 = resolveLrcResult(lrclib3, musicItem);
+    if (lrc3) {
+      setCachedLyric('global', cacheKey, lrc3);
+      return { rawLrc: lrc3 };
     }
   } catch (e) {}
+
+  var cleanTitle = stripVersionTag(title);
+  if (cleanTitle && cleanTitle !== title) {
+    try {
+      var lrclib4 = await fetchLrclibLyric(cleanTitle, artist);
+      var lrc4 = resolveLrcResult(lrclib4, musicItem);
+      if (lrc4) {
+        setCachedLyric('global', cacheKey, lrc4);
+        return { rawLrc: lrc4 };
+      }
+    } catch (e) {}
+    try {
+      var lrclib5 = await fetchLrclibSearch(cleanTitle, artist);
+      var lrc5 = resolveLrcResult(lrclib5, musicItem);
+      if (lrc5) {
+        setCachedLyric('global', cacheKey, lrc5);
+        return { rawLrc: lrc5 };
+      }
+    } catch (e) {}
+  }
 
   return null;
 }
 
 module.exports = {
   platform: 'suibian',
-  version: '0.2.3',
+  version: '0.2.5',
   author: 'you',
   description: '多平台官方榜单无限随机播放，按歌名+歌手用bilibili搜索直接播放',
   srcUrl: '',
